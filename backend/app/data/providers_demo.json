@@ -1,0 +1,122 @@
+[
+  {
+    "id": "prov_bright_smile",
+    "name": "Bright Smile Dental",
+    "phone": "+15551000001",
+    "address": "123 Main St, San Francisco, CA 94102",
+    "rating": 4.7,
+    "lat": 37.7749,
+    "lng": -122.4194,
+    "services": ["dentist", "dental cleaning", "teeth whitening", "dental checkup"]
+  },
+  {
+    "id": "prov_city_dental",
+    "name": "City Dental Group",
+    "phone": "+15551000002",
+    "address": "456 Market St, San Francisco, CA 94105",
+    "rating": 4.3,
+    "lat": 37.7897,
+    "lng": -122.3972,
+    "services": ["dentist", "dental cleaning", "orthodontics", "dental checkup"]
+  },
+  {
+    "id": "prov_bay_family",
+    "name": "Bay Family Medicine",
+    "phone": "+15551000003",
+    "address": "789 Oak Ave, San Francisco, CA 94117",
+    "rating": 4.5,
+    "lat": 37.7694,
+    "lng": -122.4512,
+    "services": ["family doctor", "general checkup", "physical exam", "vaccination"]
+  },
+  {
+    "id": "prov_pacific_primary",
+    "name": "Pacific Primary Care",
+    "phone": "+15551000004",
+    "address": "321 Pine St, San Francisco, CA 94108",
+    "rating": 4.8,
+    "lat": 37.7922,
+    "lng": -122.4060,
+    "services": ["family doctor", "general checkup", "physical exam", "blood work"]
+  },
+  {
+    "id": "prov_golden_eye",
+    "name": "Golden Gate Eye Care",
+    "phone": "+15551000005",
+    "address": "555 Geary Blvd, San Francisco, CA 94102",
+    "rating": 4.6,
+    "lat": 37.7863,
+    "lng": -122.4137,
+    "services": ["optometrist", "eye exam", "contact lenses", "glasses"]
+  },
+  {
+    "id": "prov_soma_derma",
+    "name": "SoMa Dermatology",
+    "phone": "+15551000006",
+    "address": "888 Brannan St, San Francisco, CA 94103",
+    "rating": 4.2,
+    "lat": 37.7725,
+    "lng": -122.4030,
+    "services": ["dermatologist", "skin checkup", "acne treatment", "mole removal"]
+  },
+  {
+    "id": "prov_mission_chiro",
+    "name": "Mission Chiropractic",
+    "phone": "+15551000007",
+    "address": "1200 Valencia St, San Francisco, CA 94110",
+    "rating": 4.4,
+    "lat": 37.7527,
+    "lng": -122.4213,
+    "services": ["chiropractor", "back pain", "spinal adjustment", "physical therapy"]
+  },
+  {
+    "id": "prov_noe_wellness",
+    "name": "Noe Valley Wellness",
+    "phone": "+15551000008",
+    "address": "4000 24th St, San Francisco, CA 94114",
+    "rating": 4.9,
+    "lat": 37.7513,
+    "lng": -122.4345,
+    "services": ["family doctor", "general checkup", "wellness visit", "mental health"]
+  },
+  {
+    "id": "prov_sunset_dental",
+    "name": "Sunset Smiles Dental",
+    "phone": "+15551000009",
+    "address": "2300 Irving St, San Francisco, CA 94122",
+    "rating": 4.1,
+    "lat": 37.7636,
+    "lng": -122.4819,
+    "services": ["dentist", "dental cleaning", "root canal", "dental checkup"]
+  },
+  {
+    "id": "prov_richmond_ortho",
+    "name": "Richmond Orthopedics",
+    "phone": "+15551000010",
+    "address": "600 Clement St, San Francisco, CA 94118",
+    "rating": 4.5,
+    "lat": 37.7830,
+    "lng": -122.4647,
+    "services": ["orthopedist", "joint pain", "sports medicine", "physical therapy"]
+  },
+  {
+    "id": "prov_marina_ent",
+    "name": "Marina ENT Specialists",
+    "phone": "+15551000011",
+    "address": "3100 Fillmore St, San Francisco, CA 94123",
+    "rating": 4.3,
+    "lat": 37.7982,
+    "lng": -122.4359,
+    "services": ["ENT", "ear doctor", "sinus treatment", "hearing test"]
+  },
+  {
+    "id": "prov_haight_therapy",
+    "name": "Haight Street Therapy",
+    "phone": "+15551000012",
+    "address": "1500 Haight St, San Francisco, CA 94117",
+    "rating": 4.7,
+    "lat": 37.7695,
+    "lng": -122.4478,
+    "services": ["therapist", "mental health", "counseling", "anxiety treatment"]
+  }
+]
