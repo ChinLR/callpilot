@@ -6,11 +6,33 @@ import hashlib
 import logging
 from abc import ABC, abstractmethod
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+import httpx
 
 from app.config import Settings
 
+if TYPE_CHECKING:
+    from app.store import GoogleOAuthToken
+
 logger = logging.getLogger(__name__)
+
+# Google Calendar API base
+_GCAL_FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy"
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class CalendarUnavailableError(Exception):
+    """Raised when calendar availability cannot be verified.
+
+    Callers should treat this as "unknown" rather than assuming
+    the slot is free, to prevent double-bookings.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -169,12 +191,161 @@ class GoogleCalendarService:
 
 
 # ---------------------------------------------------------------------------
+# User OAuth Calendar (linked Google account)
+# ---------------------------------------------------------------------------
+
+
+class UserOAuthCalendarService:
+    """Google Calendar access using a user's OAuth 2.0 tokens.
+
+    Automatically refreshes the access token when needed.
+    """
+
+    def __init__(self, oauth_token: GoogleOAuthToken, settings: Settings) -> None:
+        self._token = oauth_token
+        self._settings = settings
+        self._calendar_id = "primary"  # always the user's own calendar
+
+    async def _ensure_fresh_token(self) -> str:
+        """Return a valid access token, refreshing if expired."""
+        # If we have a refresh token we can always refresh; for MVP we
+        # optimistically try the existing access_token first and refresh
+        # on 401.
+        return self._token.access_token
+
+    async def _refresh_access_token(self) -> str:
+        """Use the refresh token to get a new access token."""
+        if not self._token.refresh_token:
+            raise RuntimeError("No refresh token available")
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                _GOOGLE_TOKEN_URL,
+                data={
+                    "client_id": self._settings.google_oauth_client_id,
+                    "client_secret": self._settings.google_oauth_client_secret,
+                    "refresh_token": self._token.refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+
+        if resp.status_code != 200:
+            logger.error("Token refresh failed: %s %s", resp.status_code, resp.text)
+            raise RuntimeError("Failed to refresh Google OAuth token")
+
+        data = resp.json()
+        self._token.access_token = data["access_token"]
+        if "refresh_token" in data:
+            self._token.refresh_token = data["refresh_token"]
+
+        # Persist the refreshed token back to the store
+        from app.store import store
+        await store.save_oauth_token(self._token)
+
+        logger.info("Refreshed OAuth token for user_id=%s", self._token.user_id)
+        return self._token.access_token
+
+    async def _freebusy_query(
+        self, time_min: datetime, time_max: datetime, access_token: str
+    ) -> list[tuple[datetime, datetime]]:
+        """Call the Google Calendar FreeBusy API."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        body = {
+            "timeMin": time_min.isoformat(),
+            "timeMax": time_max.isoformat(),
+            "items": [{"id": self._calendar_id}],
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(_GCAL_FREEBUSY_URL, json=body, headers=headers)
+
+        if resp.status_code == 401:
+            # Token expired — refresh and retry once
+            new_token = await self._refresh_access_token()
+            headers = {"Authorization": f"Bearer {new_token}"}
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(_GCAL_FREEBUSY_URL, json=body, headers=headers)
+
+        if resp.status_code != 200:
+            raise CalendarUnavailableError(
+                f"Google FreeBusy API returned {resp.status_code}: {resp.text}"
+            )
+
+        result = resp.json()
+        busy_raw = (
+            result.get("calendars", {})
+            .get(self._calendar_id, {})
+            .get("busy", [])
+        )
+        return [
+            (datetime.fromisoformat(b["start"]), datetime.fromisoformat(b["end"]))
+            for b in busy_raw
+        ]
+
+    async def is_free(self, start: datetime, end: datetime) -> bool:
+        """Check availability on the user's Google Calendar.
+
+        Raises CalendarUnavailableError if the calendar cannot be reached,
+        rather than silently assuming the slot is free.
+        """
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+
+        buffer = timedelta(minutes=15)
+        try:
+            blocks = await self._freebusy_query(
+                start - buffer, end + buffer, self._token.access_token
+            )
+        except CalendarUnavailableError:
+            raise  # already a structured error — let callers handle it
+        except Exception as exc:
+            raise CalendarUnavailableError(
+                "Failed to verify calendar availability"
+            ) from exc
+
+        for b_start, b_end in blocks:
+            if _intervals_overlap(start, end, b_start, b_end):
+                return False
+        return True
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 
+async def get_calendar_service_for_user(
+    user_id: str,
+    settings: Settings | None = None,
+) -> CalendarService:
+    """Return a calendar service that uses the user's linked Google account.
+
+    Falls back to the default (service-account or mock) if no OAuth token
+    is stored for this user.
+    """
+    if settings is None:
+        from app.config import get_settings
+        settings = get_settings()
+
+    from app.store import store
+    token = await store.get_oauth_token(user_id)
+
+    if token is not None:
+        logger.info("Using user-linked Google Calendar for user_id=%s", user_id)
+        return UserOAuthCalendarService(token, settings)  # type: ignore[return-value]
+
+    # Fall back to default
+    return get_calendar_service(settings)
+
+
 def get_calendar_service(settings: Settings | None = None) -> CalendarService:
-    """Return the appropriate calendar service based on config."""
+    """Return the appropriate calendar service based on config.
+
+    Prefers service-account integration if configured, otherwise mock.
+    For user-specific OAuth calendars, use get_calendar_service_for_user().
+    """
     if (
         settings
         and settings.use_real_calendar

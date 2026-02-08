@@ -18,10 +18,16 @@ class Settings(BaseSettings):
     allow_all_cors: bool = True
     simulated_calls: bool = True
 
-    # --- Google Calendar ---
+    # --- Google Calendar (service-account, legacy) ---
     use_real_calendar: bool = False
     google_credentials_json: str = ""
     google_calendar_id: str = "primary"
+
+    # --- Google OAuth 2.0 (user-linked calendars) ---
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = ""  # e.g. http://localhost:8000/auth/google/callback
+    frontend_url: str = "http://localhost:3000"  # where to redirect after OAuth
 
     # --- Google Places ---
     use_google_places: bool = False

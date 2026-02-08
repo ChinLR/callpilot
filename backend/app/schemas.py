@@ -37,6 +37,7 @@ class AppointmentRequest(BaseModel):
     preferences: dict[str, float] = Field(default_factory=dict)
     max_providers: int = 15
     max_parallel: int = 5
+    user_id: str = ""  # links to Google Calendar when OAuth is connected
 
 
 # ---------------------------------------------------------------------------
