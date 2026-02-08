@@ -99,6 +99,12 @@ def rank_offers(
     scored.sort(key=lambda t: t[0], reverse=True)
 
     sorted_offers = [t[1] for t in scored]
-    debug = {t[1].provider_id: t[2] for t in scored}
+
+    # Group breakdowns by provider_id as a list so multiple offers
+    # from the same provider are all preserved.
+    debug: dict[str, list[dict]] = {}
+    for t in scored:
+        pid = t[1].provider_id
+        debug.setdefault(pid, []).append(t[2])
 
     return sorted_offers, debug
