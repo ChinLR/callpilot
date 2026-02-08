@@ -15,7 +15,12 @@ from app.schemas import (
     Provider,
     SlotOffer,
 )
-from app.services.calendar import CalendarService, get_calendar_service
+from app.services.calendar import (
+    CalendarService,
+    CalendarUnavailableError,
+    get_calendar_service,
+    get_calendar_service_for_user,
+)
 from app.services.distance import DistanceService, get_distance_service
 from app.services.providers import search_providers
 from app.services.scoring import rank_offers
@@ -40,7 +45,11 @@ async def simulate_call(
 ) -> ProviderCallResult:
     """Deterministic simulated receptionist for demo / testing."""
     req = campaign.request
-    calendar_svc = get_calendar_service(settings)
+    # Use the user's linked Google Calendar when available
+    if req.user_id:
+        calendar_svc = await get_calendar_service_for_user(req.user_id, settings)
+    else:
+        calendar_svc = get_calendar_service(settings)
 
     # Stable seed from provider id
     seed = int(hashlib.sha256(provider.id.encode()).hexdigest(), 16)
@@ -81,15 +90,23 @@ async def simulate_call(
         if candidate_end > req.date_range_end:
             continue
 
-        # Check calendar
-        is_free = await calendar_svc.is_free(candidate_start, candidate_end)
+        # Check calendar — skip slot if calendar is unreachable (fail-closed)
+        try:
+            is_free = await calendar_svc.is_free(candidate_start, candidate_end)
+        except CalendarUnavailableError:
+            logger.warning("Calendar unavailable; skipping slot for %s", provider.id)
+            continue
         if not is_free:
             # Try shifting 1 hour later
             candidate_start += timedelta(hours=1)
             candidate_end += timedelta(hours=1)
             if candidate_end > req.date_range_end:
                 continue
-            is_free = await calendar_svc.is_free(candidate_start, candidate_end)
+            try:
+                is_free = await calendar_svc.is_free(candidate_start, candidate_end)
+            except CalendarUnavailableError:
+                logger.warning("Calendar unavailable; skipping shifted slot for %s", provider.id)
+                continue
             if not is_free:
                 continue
 
@@ -121,6 +138,57 @@ async def simulate_call(
         provider_id=provider.id,
         outcome=CallOutcome.COMPLETED_NO_MATCH,
         notes="Simulated: all candidate slots conflicted with calendar",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real Twilio + ElevenLabs call (used when SIMULATED_CALLS=false)
+# ---------------------------------------------------------------------------
+
+
+async def real_call(
+    provider: Provider,
+    campaign: CampaignState,
+    settings: Settings,
+) -> ProviderCallResult:
+    """Place a real Twilio call and wait for the ElevenLabs agent to finish."""
+    from app.telephony.twilio_client import create_call
+
+    call_sid = await create_call(
+        to_phone=provider.phone,
+        campaign_id=campaign.campaign_id,
+        provider_id=provider.id,
+        settings=settings,
+    )
+
+    # Wait for the media stream handler to signal completion
+    mapping = await store.get_call(call_sid)
+    if mapping is None:
+        return ProviderCallResult(
+            provider_id=provider.id,
+            outcome=CallOutcome.FAILED,
+            notes="Call mapping not found after create_call",
+        )
+
+    # Block until media_stream.py calls store.complete_call()
+    await mapping.completion_event.wait()
+
+    result_data = mapping.result
+    if result_data is None:
+        return ProviderCallResult(
+            provider_id=provider.id,
+            call_sid=call_sid,
+            outcome=CallOutcome.FAILED,
+            notes="Call completed but no result data",
+        )
+
+    return ProviderCallResult(
+        provider_id=result_data.provider_id,
+        call_sid=call_sid,
+        outcome=CallOutcome(result_data.outcome),
+        offers=result_data.offers,
+        transcript_snippet=result_data.transcript_snippet,
+        notes=result_data.notes,
     )
 
 
@@ -180,9 +248,9 @@ async def run_campaign(
         logger.error("Campaign %s not found", campaign_id)
         return
 
-    # Use simulated calls if flag is set or no call_fn provided
-    if call_fn is None or settings.simulated_calls:
-        call_fn = simulate_call
+    # Select call function: use explicit call_fn, or pick based on config
+    if call_fn is None:
+        call_fn = simulate_call if settings.simulated_calls else real_call
 
     req = campaign.request
 

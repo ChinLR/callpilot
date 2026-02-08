@@ -13,11 +13,40 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.config import Settings
-from app.services.calendar import get_calendar_service
+from app.services.calendar import (
+    CalendarUnavailableError,
+    get_calendar_service,
+    get_calendar_service_for_user,
+)
 from app.services.distance import get_distance_service
 from app.services.providers import search_providers
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _get_calendar_for_context(context: dict):
+    """Resolve the best calendar service from the tool context.
+
+    Uses the user's linked Google Calendar if the campaign has a user_id,
+    otherwise falls back to the default (service-account or mock).
+    """
+    settings: Settings = context.get("settings", Settings())
+
+    campaign_id = context.get("campaign_id", "")
+    if campaign_id:
+        from app.store import store
+        campaign = await store.get_campaign(campaign_id)
+        if campaign and campaign.request.user_id:
+            return await get_calendar_service_for_user(
+                campaign.request.user_id, settings
+            )
+
+    return get_calendar_service(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -27,8 +56,7 @@ logger = logging.getLogger(__name__)
 
 async def calendar_check(params: dict, context: dict) -> dict:
     """Check if a time slot is free on the user's calendar."""
-    settings: Settings = context.get("settings", Settings())
-    calendar = get_calendar_service(settings)
+    calendar = await _get_calendar_for_context(context)
 
     start_str = params.get("start", "")
     end_str = params.get("end", "")
@@ -39,14 +67,18 @@ async def calendar_check(params: dict, context: dict) -> dict:
     except (ValueError, TypeError):
         return {"free": False, "error": "Invalid datetime format"}
 
-    free = await calendar.is_free(start, end)
+    try:
+        free = await calendar.is_free(start, end)
+    except CalendarUnavailableError:
+        logger.warning("Calendar unavailable during calendar_check; reporting as not free")
+        return {"free": False, "error": "Calendar unavailable, cannot verify"}
+
     return {"free": free}
 
 
 async def validate_slot(params: dict, context: dict) -> dict:
     """Validate a slot: must be calendar-free and within the campaign's date range."""
-    settings: Settings = context.get("settings", Settings())
-    calendar = get_calendar_service(settings)
+    calendar = await _get_calendar_for_context(context)
 
     start_str = params.get("start", "")
     end_str = params.get("end", "")
@@ -57,7 +89,30 @@ async def validate_slot(params: dict, context: dict) -> dict:
     except (ValueError, TypeError):
         return {"ok": False, "reason": "Invalid datetime format"}
 
-    free = await calendar.is_free(start, end)
+    # Verify slot falls within campaign date range
+    campaign_id = context.get("campaign_id", "")
+    if campaign_id:
+        from app.store import store
+        campaign = await store.get_campaign(campaign_id)
+        if campaign:
+            range_start = campaign.request.date_range_start
+            range_end = campaign.request.date_range_end
+            # Make naive datetimes comparable by adding UTC if needed
+            if start.tzinfo is not None and range_start.tzinfo is None:
+                range_start = range_start.replace(tzinfo=timezone.utc)
+                range_end = range_end.replace(tzinfo=timezone.utc)
+            elif start.tzinfo is None and range_start.tzinfo is not None:
+                start = start.replace(tzinfo=timezone.utc)
+                end = end.replace(tzinfo=timezone.utc)
+            if start < range_start or end > range_end:
+                return {"ok": False, "reason": "Slot is outside the requested date range"}
+
+    try:
+        free = await calendar.is_free(start, end)
+    except CalendarUnavailableError:
+        logger.warning("Calendar unavailable during validate_slot; rejecting slot")
+        return {"ok": False, "reason": "Calendar unavailable, cannot verify availability"}
+
     if not free:
         return {"ok": False, "reason": "Conflicts with client calendar"}
 
@@ -90,6 +145,11 @@ async def log_event(params: dict, context: dict) -> dict:
     """Log an event from the agent (used for call summaries and debugging)."""
     message = params.get("message", "")
     data = params.get("data", {})
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            data = {"raw": data}
 
     campaign_id = context.get("campaign_id", "")
     provider_id = context.get("provider_id", "")
@@ -110,7 +170,12 @@ async def provider_lookup(params: dict, context: dict) -> dict:
 
     service = params.get("service", "")
     location = params.get("location", "")
-    exclude_ids: list[str] = params.get("exclude_ids", [])
+    exclude_ids = params.get("exclude_ids", [])
+    if isinstance(exclude_ids, str):
+        try:
+            exclude_ids = json.loads(exclude_ids)
+        except (json.JSONDecodeError, TypeError):
+            exclude_ids = []
 
     if not service or not location:
         # Try to infer from campaign
@@ -144,6 +209,11 @@ async def propose_alternatives(params: dict, context: dict) -> dict:
     settings: Settings = context.get("settings", Settings())
 
     constraints = params.get("constraints", {})
+    if isinstance(constraints, str):
+        try:
+            constraints = json.loads(constraints)
+        except (json.JSONDecodeError, TypeError):
+            constraints = {}
     service = constraints.get("service", "")
     location = constraints.get("location", "")
     date_start_str = constraints.get("date_range_start", "")

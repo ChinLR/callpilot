@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from app.auth import router as auth_router
 from app.config import Settings, get_settings
 from app.logging_utils import setup_logging
 from app.schemas import (
@@ -23,7 +24,11 @@ from app.schemas import (
     ConfirmResponse,
     CreateCampaignResponse,
 )
-from app.services.calendar import get_calendar_service
+from app.services.calendar import (
+    CalendarUnavailableError,
+    get_calendar_service,
+    get_calendar_service_for_user,
+)
 from app.store import store
 from app.swarm.manager import run_campaign
 from app.telephony.media_stream import handle_media_stream
@@ -66,6 +71,9 @@ if settings.allow_all_cors:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+# Register auth routes
+app.include_router(auth_router)
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +148,22 @@ async def confirm_slot(campaign_id: str, body: ConfirmRequest) -> ConfirmRespons
             detail="Requested slot not found in campaign ranked offers",
         )
 
-    # Re-check calendar
+    # Re-check calendar (use user's linked Google Calendar if available)
     settings = get_settings()
-    calendar = get_calendar_service(settings)
-    still_free = await calendar.is_free(body.start, body.end)
+    user_id = campaign.request.user_id
+    if user_id:
+        calendar = await get_calendar_service_for_user(user_id, settings)
+    else:
+        calendar = get_calendar_service(settings)
+
+    try:
+        still_free = await calendar.is_free(body.start, body.end)
+    except CalendarUnavailableError:
+        logger.exception("Calendar unavailable during confirm for campaign %s", campaign_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot verify calendar availability right now; please try again",
+        )
     if not still_free:
         raise HTTPException(
             status_code=409,
@@ -259,6 +279,15 @@ async def twilio_stream_ws(
 ) -> None:
     """WebSocket endpoint for Twilio bidirectional Media Streams."""
     settings = get_settings()
+
+    # Twilio Media Streams don't pass query params on the WebSocket URL.
+    # Fall back to looking up the call mapping from the store.
+    if not campaign_id or not provider_id:
+        call_mapping = await store.get_call(call_id)
+        if call_mapping:
+            campaign_id = campaign_id or call_mapping.campaign_id
+            provider_id = provider_id or call_mapping.provider_id
+
     await handle_media_stream(
         websocket=websocket,
         call_id=call_id,

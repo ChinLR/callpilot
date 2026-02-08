@@ -21,6 +21,14 @@ cd callpilot/backend
 pip install -e ".[dev]"
 ```
 
+> **Note:** `python-multipart` is required for Twilio webhook form parsing and is
+> included in the project dependencies. If you see an error about
+> `python-multipart` not being installed, run:
+>
+> ```bash
+> pip install python-multipart
+> ```
+
 For Google integrations (Calendar, Places, Distance Matrix):
 
 ```bash
