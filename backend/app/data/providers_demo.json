@@ -2,23 +2,14 @@
   {
     "id": "prov_bright_smile",
     "name": "Bright Smile Dental",
-    "phone": "+15551000001",
+    "phone": "+41762779830",
     "address": "123 Main St, San Francisco, CA 94102",
     "rating": 4.7,
     "lat": 37.7749,
     "lng": -122.4194,
     "services": ["dentist", "dental cleaning", "teeth whitening", "dental checkup"]
   },
-  {
-    "id": "prov_city_dental",
-    "name": "City Dental Group",
-    "phone": "+15551000002",
-    "address": "456 Market St, San Francisco, CA 94105",
-    "rating": 4.3,
-    "lat": 37.7897,
-    "lng": -122.3972,
-    "services": ["dentist", "dental cleaning", "orthodontics", "dental checkup"]
-  },
+
   {
     "id": "prov_bay_family",
     "name": "Bay Family Medicine",
@@ -78,16 +69,6 @@
     "lat": 37.7513,
     "lng": -122.4345,
     "services": ["family doctor", "general checkup", "wellness visit", "mental health"]
-  },
-  {
-    "id": "prov_sunset_dental",
-    "name": "Sunset Smiles Dental",
-    "phone": "+15551000009",
-    "address": "2300 Irving St, San Francisco, CA 94122",
-    "rating": 4.1,
-    "lat": 37.7636,
-    "lng": -122.4819,
-    "services": ["dentist", "dental cleaning", "root canal", "dental checkup"]
   },
   {
     "id": "prov_richmond_ortho",

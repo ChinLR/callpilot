@@ -18,6 +18,26 @@ from app.schemas import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Google OAuth token storage
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GoogleOAuthToken:
+    """Stores a user's Google OAuth credentials."""
+
+    user_id: str
+    access_token: str
+    refresh_token: str
+    token_uri: str = "https://oauth2.googleapis.com/token"
+    scopes: list[str] = field(default_factory=lambda: [
+        "https://www.googleapis.com/auth/calendar.readonly",
+    ])
+    expiry: datetime | None = None
+    linked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 @dataclass
 class ProviderCallResultData:
     """Lightweight call result stored in campaign state."""
@@ -64,6 +84,7 @@ class Store:
     def __init__(self) -> None:
         self.campaigns: dict[str, CampaignState] = {}
         self.calls: dict[str, CallMapping] = {}
+        self.oauth_tokens: dict[str, GoogleOAuthToken] = {}  # user_id → token
         self._lock = asyncio.Lock()
 
     # ----- Campaign helpers ------------------------------------------------
@@ -118,6 +139,19 @@ class Store:
                 return
             mapping.result = result
             mapping.completion_event.set()
+
+    # ----- OAuth token helpers ---------------------------------------------
+
+    async def save_oauth_token(self, token: GoogleOAuthToken) -> None:
+        async with self._lock:
+            self.oauth_tokens[token.user_id] = token
+
+    async def get_oauth_token(self, user_id: str) -> GoogleOAuthToken | None:
+        return self.oauth_tokens.get(user_id)
+
+    async def delete_oauth_token(self, user_id: str) -> bool:
+        async with self._lock:
+            return self.oauth_tokens.pop(user_id, None) is not None
 
 
 # Module-level singleton

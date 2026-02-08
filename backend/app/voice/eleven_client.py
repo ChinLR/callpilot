@@ -79,16 +79,11 @@ async def create_eleven_session(
             additional_headers={"Origin": "https://callpilot.app"},
         )
 
-        # Send initiation message with prompt override
+        # Send initiation message without overrides — the ElevenLabs agent
+        # config does not allow client-side overrides for prompt or
+        # first_message, so we rely on the dashboard configuration.
         init_msg = {
             "type": "conversation_initiation_client_data",
-            "conversation_config_override": {
-                "agent": {
-                    "prompt": {"prompt": system_prompt},
-                    "first_message": first_message,
-                    "language": "en",
-                },
-            },
         }
         await ws.send(json.dumps(init_msg))
 
