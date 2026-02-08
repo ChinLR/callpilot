@@ -84,10 +84,11 @@ async def handle_media_stream(
 
         # --- Concurrent bridge tasks ---
         stop_event = asyncio.Event()
+        bridge_error = False  # Track whether either bridge task hit an error
 
         async def twilio_to_eleven() -> None:
             """Read Twilio WS messages and forward audio to ElevenLabs."""
-            nonlocal stream_sid, outcome
+            nonlocal stream_sid, bridge_error
             try:
                 while not stop_event.is_set():
                     raw = await websocket.receive_text()
@@ -126,11 +127,12 @@ async def handle_media_stream(
                 stop_event.set()
             except Exception:
                 logger.exception("Error in twilio_to_eleven for call %s", call_id)
+                bridge_error = True
                 stop_event.set()
 
         async def eleven_to_twilio() -> None:
             """Read ElevenLabs WS messages and forward audio / handle tools."""
-            nonlocal outcome
+            nonlocal bridge_error
             try:
                 while not stop_event.is_set():
                     raw = await eleven_ws.recv()  # type: ignore[union-attr]
@@ -220,6 +222,7 @@ async def handle_media_stream(
 
             except Exception:
                 logger.exception("Error in eleven_to_twilio for call %s", call_id)
+                bridge_error = True
                 stop_event.set()
 
         # Run both bridge directions concurrently
@@ -229,8 +232,11 @@ async def handle_media_stream(
             return_exceptions=True,
         )
 
-        # Determine outcome
-        if offers:
+        # Determine outcome — if a bridge task errored, report FAILED
+        # unless we still managed to collect offers before the error.
+        if bridge_error and not offers:
+            outcome = CallOutcome.FAILED
+        elif offers:
             outcome = CallOutcome.SUCCESS
         else:
             outcome = CallOutcome.COMPLETED_NO_MATCH
