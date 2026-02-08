@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 225 25% 8%;
+    --foreground: 220 15% 93%;
+
+    --card: 225 20% 12%;
+    --card-foreground: 220 15% 93%;
+
+    --popover: 225 20% 14%;
+    --popover-foreground: 220 15% 93%;
+
+    --primary: 40 72% 52%;
+    --primary-foreground: 225 25% 6%;
+
+    --secondary: 225 18% 16%;
+    --secondary-foreground: 220 15% 85%;
+
+    --muted: 225 15% 16%;
+    --muted-foreground: 220 10% 55%;
+
+    --accent: 40 72% 52%;
+    --accent-foreground: 225 25% 6%;
+
+    --destructive: 0 62% 40%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 225 15% 18%;
+    --input: 225 15% 20%;
+    --ring: 40 72% 52%;
+
+    --radius: 0.75rem;
+
+    --success: 152 50% 48%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 85% 55%;
+    --warning-foreground: 0 0% 100%;
+
+    --sidebar-background: 225 25% 8%;
+    --sidebar-foreground: 220 15% 93%;
+    --sidebar-primary: 40 72% 52%;
+    --sidebar-primary-foreground: 225 25% 6%;
+    --sidebar-accent: 225 18% 16%;
+    --sidebar-accent-foreground: 220 15% 93%;
+    --sidebar-border: 225 15% 18%;
+    --sidebar-ring: 40 72% 52%;
+  }
+
+  .dark {
+    --background: 225 25% 8%;
+    --foreground: 220 15% 93%;
+
+    --card: 225 20% 12%;
+    --card-foreground: 220 15% 93%;
+
+    --popover: 225 20% 14%;
+    --popover-foreground: 220 15% 93%;
+
+    --primary: 40 72% 52%;
+    --primary-foreground: 225 25% 6%;
+
+    --secondary: 225 18% 16%;
+    --secondary-foreground: 220 15% 85%;
+
+    --muted: 225 15% 16%;
+    --muted-foreground: 220 10% 55%;
+
+    --accent: 40 72% 52%;
+    --accent-foreground: 225 25% 6%;
+
+    --destructive: 0 62% 40%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 225 15% 18%;
+    --input: 225 15% 20%;
+    --ring: 40 72% 52%;
+
+    --success: 152 50% 48%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 85% 55%;
+    --warning-foreground: 0 0% 100%;
+
+    --sidebar-background: 225 25% 8%;
+    --sidebar-foreground: 220 15% 93%;
+    --sidebar-primary: 40 72% 52%;
+    --sidebar-primary-foreground: 225 25% 6%;
+    --sidebar-accent: 225 18% 16%;
+    --sidebar-accent-foreground: 220 15% 93%;
+    --sidebar-border: 225 15% 18%;
+    --sidebar-ring: 40 72% 52%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+
+  .font-serif {
+    font-family: 'Playfair Display', serif;
+  }
+
+  .font-display {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-card/80 backdrop-blur-xl border border-border/50;
+  }
+}
