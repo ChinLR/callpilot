@@ -2,7 +2,7 @@
 
 An agentic Voice AI system that autonomously calls service providers, negotiates appointment slots in natural conversation, and selects the optimal match based on calendar availability, location, and user preferences.
 
-Here is the link to the ElevenLabs AI agent I created to look for available appointment slots: https://elevenlabs.io/app/talk-to?agent_id=agent_8301kgxdsjgafq5ryv9s8kz780d8&branch_id=agtbrch_1601kgxdsk5fffhb69e8wm8vtfre
+Here is the link to the ElevenLabs AI agent I created to look for available appointment slots (It doesn't really work on its own as it needs access to the user's calendar which can be connected on the CallPilot site) : https://elevenlabs.io/app/talk-to?agent_id=agent_8301kgxdsjgafq5ryv9s8kz780d8&branch_id=agtbrch_1601kgxdsk5fffhb69e8wm8vtfre
 
 ---
 
