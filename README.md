@@ -299,6 +299,3 @@ cd frontend
 npm test
 ```
 
-## License
-
-MIT
