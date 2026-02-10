@@ -27,6 +27,8 @@ CallPilot's swarm calling feature places multiple parallel outbound calls to pro
 
 The server ships with `SIMULATED_CALLS=true` by default. Leave this enabled unless you have a Twilio Pro account with multiple numbers and genuinely intend to place real calls.
 
+**Note** that I have tried and tested an actual call with the ElevenLabs agent. Here is the link with the recording and transcript of that call: https://drive.google.com/file/d/1FrA6vBfxsDQn2aEMOq2q1f-vInjf6ke4/view?usp=sharing
+
 ---
 
 ## Planned Future Improvements
