@@ -15,6 +15,8 @@ import type {
 interface SearchParams {
   service: string;
   location: string;
+  lat?: number;
+  lng?: number;
   dateRangeStart: string;
   dateRangeEnd: string;
   durationMin: number;
@@ -54,6 +56,8 @@ export function useCampaign() {
         const req: ProviderSearchRequest = {
           service: params.service,
           location: params.location,
+          lat: params.lat,
+          lng: params.lng,
           max_travel_minutes: params.maxTravelMinutes,
         };
 
@@ -218,6 +222,7 @@ export function useCampaign() {
     booking,
     selectedSlot,
     providers,
+    searchParams,
     autoBook,
     error,
     isLoading,

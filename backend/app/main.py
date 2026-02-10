@@ -10,25 +10,31 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from app.auth import router as auth_router
 from app.config import Settings, get_settings
 from app.logging_utils import setup_logging
 from app.schemas import (
     AppointmentRequest,
+    CallMode,
     CampaignProgress,
     CampaignResponse,
     CampaignStatusEnum,
     ConfirmRequest,
     ConfirmResponse,
     CreateCampaignResponse,
+    ProviderPreview,
+    ProviderSearchRequest,
+    ProviderSearchResponse,
 )
 from app.services.calendar import (
     CalendarUnavailableError,
     get_calendar_service,
     get_calendar_service_for_user,
 )
+from app.services.distance import get_distance_service
+from app.services.providers import search_providers
 from app.store import store
 from app.swarm.manager import run_campaign
 from app.telephony.media_stream import handle_media_stream
@@ -87,6 +93,103 @@ async def health() -> dict[str, bool]:
 
 
 # ---------------------------------------------------------------------------
+# Call mode settings (switch between real / simulated / hybrid)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/settings/call-mode")
+async def get_call_mode() -> dict[str, Any]:
+    """Return the current server-wide call mode default and available options."""
+    s = get_settings()
+    effective = "simulated" if s.simulated_calls else "real"
+    return {
+        "server_default": effective,
+        "available_modes": [m.value for m in CallMode],
+        "description": {
+            "auto": "Use the server-wide SIMULATED_CALLS env var",
+            "real": "Every call goes through Twilio (requires a Twilio number per parallel call)",
+            "simulated": "All calls are simulated locally — no Twilio needed",
+            "hybrid": "First call is real (Twilio), remaining calls are simulated in parallel",
+        },
+    }
+
+
+@app.put("/settings/call-mode")
+async def set_call_mode(mode: str = Query(...)) -> dict[str, str]:
+    """Toggle the server-wide simulated_calls flag at runtime.
+
+    Accepts ``real`` or ``simulated``.  This changes the in-process default
+    for all future campaigns that use ``call_mode=auto``.
+    """
+    if mode not in ("real", "simulated"):
+        raise HTTPException(
+            status_code=400,
+            detail="mode must be 'real' or 'simulated'",
+        )
+    # Mutate the cached settings singleton
+    s = get_settings()
+    s.simulated_calls = mode == "simulated"
+    logger.info("Server-wide call mode changed to %s (simulated_calls=%s)", mode, s.simulated_calls)
+    return {"server_default": mode}
+
+
+# ---------------------------------------------------------------------------
+# Provider search (preview before calling)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/providers/search", response_model=ProviderSearchResponse)
+async def search_providers_endpoint(
+    body: ProviderSearchRequest,
+) -> ProviderSearchResponse:
+    """Search providers and return them with travel-time info.
+
+    The frontend calls this first so the user can review providers
+    (distance, rating, etc.) and pick which ones to call.
+    """
+    settings = get_settings()
+    providers = await search_providers(
+        body.service, body.location, settings,
+        lat=body.lat, lng=body.lng,
+    )
+    providers = providers[: body.max_providers]
+
+    # Use coordinates as distance origin when available, else text location
+    distance_origin = (
+        f"{body.lat},{body.lng}" if body.lat is not None and body.lng is not None
+        else body.location
+    )
+
+    distance_svc = get_distance_service(settings)
+    previews: list[ProviderPreview] = []
+    for p in providers:
+        travel = await distance_svc.estimate_travel_minutes(distance_origin, p)
+
+        # Skip providers that exceed the distance filter
+        if body.max_travel_minutes > 0 and travel > body.max_travel_minutes:
+            continue
+
+        previews.append(
+            ProviderPreview(
+                id=p.id,
+                name=p.name,
+                phone=p.phone,
+                address=p.address,
+                rating=p.rating,
+                lat=p.lat,
+                lng=p.lng,
+                services=p.services,
+                travel_minutes=travel,
+            )
+        )
+
+    # Sort by travel time (closest first)
+    previews.sort(key=lambda p: p.travel_minutes)
+
+    return ProviderSearchResponse(providers=previews)
+
+
+# ---------------------------------------------------------------------------
 # Campaign endpoints
 # ---------------------------------------------------------------------------
 
@@ -100,10 +203,22 @@ async def create_campaign(request: AppointmentRequest) -> CreateCampaignResponse
     settings = get_settings()
     asyncio.create_task(run_campaign(campaign.campaign_id, settings=settings))
 
-    logger.info("Campaign %s started", campaign.campaign_id)
+    # Resolve the effective call mode so the frontend knows what will happen
+    from app.swarm.manager import _resolve_call_mode
+    effective_mode = _resolve_call_mode(request.call_mode, settings)
+
+    logger.info(
+        "Campaign %s started (user_id=%r, call_mode=%s→%s, oauth_tokens=%d)",
+        campaign.campaign_id,
+        request.user_id,
+        request.call_mode.value,
+        effective_mode.value,
+        len(store.oauth_tokens),
+    )
     return CreateCampaignResponse(
         campaign_id=campaign.campaign_id,
         status=CampaignStatusEnum.running,
+        call_mode=effective_mode.value,
     )
 
 
@@ -114,13 +229,22 @@ async def get_campaign(campaign_id: str) -> CampaignResponse:
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
+    # Enrich debug with provider metadata so pages can display names/ratings
+    debug = dict(campaign.debug)
+    if campaign.providers and "providers" not in debug:
+        debug["providers"] = {
+            p.id: {"name": p.name, "rating": p.rating, "address": p.address, "phone": p.phone}
+            for p in campaign.providers
+        }
+
     return CampaignResponse(
         campaign_id=campaign.campaign_id,
         status=campaign.status,
         progress=campaign.progress,
         best=campaign.best,
         ranked=campaign.ranked,
-        debug=campaign.debug,
+        booking=campaign.booking_confirmation,
+        debug=debug,
     )
 
 
@@ -151,6 +275,11 @@ async def confirm_slot(campaign_id: str, body: ConfirmRequest) -> ConfirmRespons
     # Re-check calendar (use user's linked Google Calendar if available)
     settings = get_settings()
     user_id = campaign.request.user_id
+
+    # Fallback: if no user_id, try the first stored OAuth token (demo mode)
+    if not user_id and store.oauth_tokens:
+        user_id = next(iter(store.oauth_tokens))
+
     if user_id:
         calendar = await get_calendar_service_for_user(user_id, settings)
     else:

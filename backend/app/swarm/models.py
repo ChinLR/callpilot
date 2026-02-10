@@ -16,6 +16,8 @@ class CallOutcome(str, Enum):
     FAILED = "FAILED"
     NO_SLOTS = "NO_SLOTS"
     COMPLETED_NO_MATCH = "COMPLETED_NO_MATCH"
+    BOOKING_CONFIRMED = "BOOKING_CONFIRMED"
+    BOOKING_REJECTED = "BOOKING_REJECTED"
 
 
 class ProviderCallResult(BaseModel):

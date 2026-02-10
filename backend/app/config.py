@@ -37,9 +37,18 @@ class Settings(BaseSettings):
     use_google_distance: bool = False
     google_maps_api_key: str = ""
 
+    # --- Timezone ---
+    default_timezone: str = "America/Los_Angeles"  # IANA tz for business-hour interpretation
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
+_settings_instance: Settings | None = None
+
+
 def get_settings() -> Settings:
-    """Return a cached settings instance."""
-    return Settings()
+    """Return a cached settings singleton (so runtime toggles persist)."""
+    global _settings_instance
+    if _settings_instance is None:
+        _settings_instance = Settings()
+    return _settings_instance

@@ -5,14 +5,68 @@ places outbound phone calls via Twilio, bridges audio to an ElevenLabs
 Conversational AI agent that negotiates appointment slots, scores the offers,
 and returns a ranked shortlist.
 
+Here is the link to the ElevenLabs AI agent I created to look for available appointment slots: https://elevenlabs.io/app/talk-to?agent_id=agent_8301kgxdsjgafq5ryv9s8kz780d8&branch_id=agtbrch_1601kgxdsk5fffhb69e8wm8vtfre
+
+## Post-Hackathon Updates
+
+The following capabilities were added after the initial hackathon build:
+
+- **Browser geolocation**: Users can grant location permissions to automatically
+  detect their position, which is reverse-geocoded via Nominatim and displayed
+  in the search form.
+- **Manual address input**: Users can type a city, neighbourhood, address, or
+  postcode. The backend uses this text (or the precise coordinates from
+  geolocation) to search for real providers.
+- **Real provider search via Google Places**: When enabled, the backend queries
+  Google Places Nearby Search (with coordinates) or Text Search (with text) to
+  find real healthcare providers, including their names, addresses, phone
+  numbers, ratings, and coordinates.
+- **Interactive provider map**: The provider selection screen now includes a
+  Leaflet/OpenStreetMap map showing provider pins and the user's search
+  location. Selected providers are highlighted; deselected ones are dimmed.
+- **Provider ID cache**: Providers returned during the initial search are cached
+  in-memory by ID so that the campaign can retrieve the exact same providers the
+  user selected, avoiding mismatches between different search API calls.
+
+## Important: Simulated Calls Only
+
+CallPilot's swarm calling feature places multiple parallel outbound calls to
+providers simultaneously. **In the current setup, only simulated calls are
+functional** for the following reasons:
+
+1. **No Twilio Pro account**: Twilio's free/standard tier provides a single
+   phone number, which can only sustain one concurrent outbound call. Parallel
+   real calls would require multiple Twilio numbers (one per concurrent call),
+   which requires a paid Twilio plan.
+2. **Demo safety**: For demonstrations and development, we do not want to
+   actually call real healthcare providers. Simulated calls replicate the full
+   campaign flow -- provider discovery, parallel "calling", slot negotiation,
+   calendar checking, scoring, and booking -- entirely in-process with realistic
+   delays, without dialling any real phone numbers.
+
+The server ships with `SIMULATED_CALLS=true` by default. Leave this enabled
+unless you have a Twilio Pro account with multiple numbers and genuinely intend
+to place real calls.
+
+---
+
+## Planned improvements in the future
+1. I want to implement the call back feature, now it only implements the first
+calling feature to ask for slots, but I have yet to implement the call back
+to confirm booking feature.
+2. Minor UI fixes.
+
+---
+
 ## Quick Start
 
 ### 1. Prerequisites
 
 - Python 3.11+ (3.12 recommended)
-- A Twilio account with a phone number
-- An ElevenLabs account with a Conversational AI agent configured
-- [ngrok](https://ngrok.com/) (or similar) for exposing your local server to Twilio
+- (Optional) A Twilio account with a phone number -- only needed for real calls
+- (Optional) An ElevenLabs account with a Conversational AI agent -- only needed for real calls
+- (Optional) [ngrok](https://ngrok.com/) -- only needed for real calls
+- (Optional) A Google Maps API key with Places and Distance Matrix enabled -- for real provider search
 
 ### 2. Install
 
@@ -40,7 +94,7 @@ pip install -e ".[dev,google]"
 Create a `.env` file in `callpilot/backend/`:
 
 ```env
-# --- Required for real calls ---
+# --- Required for real calls (leave blank if using simulated only) ---
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=your_auth_token
 TWILIO_CALLER_ID=+15551234567
@@ -49,19 +103,21 @@ ELEVENLABS_API_KEY=your_elevenlabs_api_key
 ELEVENLABS_AGENT_ID=your_agent_id
 
 # --- Feature flags ---
-SIMULATED_CALLS=true          # Set to false to use real Twilio + ElevenLabs
+SIMULATED_CALLS=true          # Keep true for demos; only set false with a Twilio Pro account
 ALLOW_ALL_CORS=true            # Permissive CORS for frontend dev
 
-# --- Google integrations (all optional, default off) ---
+# --- Google Places (recommended — enables real provider search) ---
+USE_GOOGLE_PLACES=true
+GOOGLE_PLACES_API_KEY=your_key   # Needs Places API enabled in Google Cloud Console
+
+# --- Google Distance Matrix (optional — real travel-time estimates) ---
+USE_GOOGLE_DISTANCE=true
+GOOGLE_MAPS_API_KEY=your_key     # Needs Distance Matrix API enabled
+
+# --- Google Calendar (optional) ---
 USE_REAL_CALENDAR=false
 GOOGLE_CREDENTIALS_JSON=path/to/service-account.json
 GOOGLE_CALENDAR_ID=primary
-
-USE_GOOGLE_PLACES=false
-GOOGLE_PLACES_API_KEY=your_key
-
-USE_GOOGLE_DISTANCE=false
-GOOGLE_MAPS_API_KEY=your_key
 ```
 
 ### 4. Expose with ngrok
@@ -101,6 +157,17 @@ curl http://localhost:8000/health
 # {"ok": true}
 ```
 
+### Call Mode Settings
+
+```bash
+# Get current server default and available modes
+curl http://localhost:8000/settings/call-mode
+
+# Toggle server default at runtime (no restart needed)
+curl -X PUT "http://localhost:8000/settings/call-mode?mode=simulated"
+curl -X PUT "http://localhost:8000/settings/call-mode?mode=real"
+```
+
 ### Start a Campaign
 
 ```bash
@@ -114,6 +181,7 @@ curl -X POST http://localhost:8000/campaigns \
     "duration_min": 30,
     "max_providers": 10,
     "max_parallel": 5,
+    "call_mode": "hybrid",
     "preferences": {
       "earliest_weight": 0.5,
       "rating_weight": 0.25,
@@ -121,8 +189,10 @@ curl -X POST http://localhost:8000/campaigns \
       "preference_weight": 0.05
     }
   }'
-# Returns 202: {"campaign_id": "abc123def456", "status": "running"}
+# Returns 202: {"campaign_id": "abc123def456", "status": "running", "call_mode": "hybrid"}
 ```
+
+> **`call_mode` values:** `auto` (default — uses server setting), `real`, `simulated`, `hybrid` (first call real, rest simulated).
 
 ### Poll Campaign Status
 
@@ -134,7 +204,7 @@ curl http://localhost:8000/campaigns/{campaign_id}
 #   "progress": { "total_providers": 10, "completed_calls": 4, ... },
 #   "best": { ... } | null,
 #   "ranked": [ ... ],
-#   "debug": { ... }
+#   "debug": { "call_mode": "hybrid", "scoring": { ... }, "provider_outcomes": { ... } }
 # }
 ```
 
@@ -206,10 +276,17 @@ back to Twilio.
 ## Architecture
 
 ```
-Frontend (Lovable)
+Frontend (React / Vite)
+    │
+    ├── Browser geolocation ──► Nominatim reverse-geocode
+    │
+    ├── POST /providers/search ──► FastAPI ──► Google Places (Nearby / Text Search)
+    │   (service, location, lat, lng)           or demo JSON fallback
     │
     ├── POST /campaigns ──────► FastAPI ──► Swarm Manager
+    │   (with call_mode: auto|real|simulated|hybrid)
     ├── GET  /campaigns/{id} ──► FastAPI ──► In-Memory Store
+    ├── PUT  /settings/call-mode ──► Toggle server default
     └── POST /campaigns/{id}/confirm ──► FastAPI
                                             │
                                    Swarm Manager
@@ -217,22 +294,28 @@ Frontend (Lovable)
                                             │
                               ┌─────────────┼─────────────┐
                               │             │             │
-                        Twilio Call 1  Twilio Call 2  Twilio Call N
+                         Provider 1    Provider 2    Provider N
                               │             │             │
-                        TwiML Webhook   TwiML Webhook  TwiML Webhook
-                              │             │             │
-                        Media Stream WS  Media Stream WS  ...
-                              │             │
-                        ┌─────┴─────┐  ┌────┴─────┐
-                        │ mulaw→PCM │  │ PCM→mulaw│
-                        └─────┬─────┘  └────┬─────┘
-                              │             │
-                        ElevenLabs WS  ElevenLabs WS
-                              │             │
-                        Tool Calls ─── Tool Calls
-                        (Calendar,     (Calendar,
-                         Distance,      Distance,
-                         Logging)       Logging)
+                  ┌───── call_mode? ─────┐  │             │
+                  │                      │  │             │
+             [real/hybrid-1st]    [simulated/hybrid-rest] │
+                  │                      │                │
+            Twilio Call           Simulated Call    Simulated Call
+                  │               (2-6s delay)      (2-6s delay)
+            TwiML Webhook              │                │
+                  │                    │                │
+            Media Stream WS      Offers generated  Offers generated
+                  │              from calendar      from calendar
+            ┌─────┴─────┐
+            │ mulaw→PCM │
+            └─────┬─────┘
+                  │
+            ElevenLabs WS
+                  │
+            Tool Calls
+            (Calendar,
+             Distance,
+             Logging)
 ```
 
 ---
@@ -241,10 +324,74 @@ Frontend (Lovable)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `SIMULATED_CALLS` | `true` | Use deterministic simulated receptionist instead of real Twilio + ElevenLabs |
-| `USE_REAL_CALENDAR` | `false` | Use Google Calendar API instead of mock busy blocks |
-| `USE_GOOGLE_PLACES` | `false` | Use Google Places API for provider search instead of demo JSON |
-| `USE_GOOGLE_DISTANCE` | `false` | Use Google Distance Matrix API instead of hash-based mock |
+| `SIMULATED_CALLS` | `true` | Server-wide default: use simulated receptionist instead of real Twilio + ElevenLabs. **Keep `true` unless you have a Twilio Pro account.** Can be overridden per-campaign via `call_mode`. |
+| `USE_GOOGLE_PLACES` | `false` | Use Google Places API for real provider search. **Recommended `true`** with a valid API key for real provider names, addresses, and map pins. Falls back to demo JSON if disabled or if the API call fails. |
+| `USE_GOOGLE_DISTANCE` | `false` | Use Google Distance Matrix API for real driving-time estimates. Falls back to hash-based mock distances if disabled. |
+| `USE_REAL_CALENDAR` | `false` | Use Google Calendar API instead of mock busy blocks. |
+
+---
+
+## Call Modes (Real vs. Simulated vs. Hybrid)
+
+Since Twilio's free plan only provides a single phone number, you can't place
+multiple parallel real calls. CallPilot supports **per-campaign call modes** so
+you can demo the parallel calling functionality without needing extra numbers.
+
+### Available Modes
+
+| Mode | Description |
+|------|-------------|
+| `auto` | **(default)** Uses the server-wide `SIMULATED_CALLS` env var to decide. |
+| `real` | Every call goes through Twilio + ElevenLabs. Requires one Twilio number per parallel call. |
+| `simulated` | All calls are simulated locally with realistic delays (2–6 seconds). No Twilio needed. |
+| `hybrid` | The **first** call is a real Twilio call; all remaining calls run as simulated calls in parallel. Best for demos on a single Twilio number. |
+
+### Setting the Mode Per-Campaign
+
+Pass `call_mode` in the campaign request body:
+
+```json
+{
+  "service": "dentist",
+  "location": "San Francisco",
+  "call_mode": "hybrid",
+  "..."
+}
+```
+
+The response includes the effective mode that was used:
+
+```json
+{"campaign_id": "abc123def456", "status": "running", "call_mode": "hybrid"}
+```
+
+### Toggling the Server-Wide Default at Runtime
+
+You can change the default without restarting the server:
+
+```bash
+# Check current mode
+curl http://localhost:8000/settings/call-mode
+
+# Switch to simulated (all campaigns using call_mode=auto will simulate)
+curl -X PUT "http://localhost:8000/settings/call-mode?mode=simulated"
+
+# Switch to real
+curl -X PUT "http://localhost:8000/settings/call-mode?mode=real"
+```
+
+### Recommended Setup for Demos
+
+1. Keep `SIMULATED_CALLS=true` in `.env` -- this ensures no real phone calls
+   are placed to providers.
+2. Enable `USE_GOOGLE_PLACES=true` with a valid API key so the search returns
+   real provider names, addresses, and map pins.
+3. Use the default `call_mode: "auto"` (or explicitly `"simulated"`) when
+   creating campaigns. The full parallel campaign flow runs end-to-end --
+   provider discovery, simultaneous "calls", slot negotiation, calendar
+   checking, scoring, and booking -- all without dialling a single real number.
+4. For best results, select 5+ providers and a date range spanning 3+ days to
+   ensure the simulation produces available time slots.
 
 ---
 
@@ -269,35 +416,43 @@ All tools should have **"Wait for response"** enabled in the ElevenLabs dashboar
 ## Project Structure
 
 ```
-callpilot/backend/
-├── app/
-│   ├── main.py              # FastAPI app, all endpoints
-│   ├── config.py             # Pydantic Settings (env vars)
-│   ├── schemas.py            # Pydantic models (Provider, SlotOffer, etc.)
-│   ├── store.py              # In-memory campaign & call state
-│   ├── logging_utils.py      # Structured JSON logging
-│   ├── data/
-│   │   └── providers_demo.json  # 12 demo providers
-│   ├── services/
-│   │   ├── providers.py      # Provider search (demo + Google Places)
-│   │   ├── calendar.py       # Calendar service (mock + Google Calendar)
-│   │   ├── distance.py       # Distance estimation (mock + Google Distance Matrix)
-│   │   └── scoring.py        # Weighted scoring engine
-│   ├── telephony/
-│   │   ├── twilio_client.py  # Outbound call creation via Twilio SDK
-│   │   ├── twiml.py          # TwiML generation (Say + Connect Stream)
-│   │   ├── audio.py          # Audio transcoding (mulaw <-> PCM)
-│   │   └── media_stream.py   # Twilio Media Stream WS handler + ElevenLabs bridge
-│   ├── voice/
-│   │   ├── eleven_client.py  # ElevenLabs Conversational AI WS client
-│   │   ├── tools_registry.py # Tool dispatch for agent tool calls
-│   │   └── prompts.py        # Agent system prompt builder
-│   └── swarm/
-│       ├── models.py         # CallOutcome enum, ProviderCallResult
-│       └── manager.py        # Campaign orchestrator (parallel calls + scoring)
-├── tests/
-│   ├── test_scoring.py       # Scoring engine tests
-│   └── test_api.py           # API endpoint tests (mocked telephony)
-├── pyproject.toml
-└── README.md
+callpilot/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI app, all endpoints
+│   │   ├── config.py             # Pydantic Settings (env vars)
+│   │   ├── schemas.py            # Pydantic models (Provider, SlotOffer, etc.)
+│   │   ├── store.py              # In-memory campaign & call state (file-backed)
+│   │   ├── logging_utils.py      # Structured JSON logging
+│   │   ├── data/
+│   │   │   └── providers_demo.json  # 12 demo providers (fallback)
+│   │   ├── services/
+│   │   │   ├── providers.py      # Provider search (demo + Google Places) + ID cache
+│   │   │   ├── calendar.py       # Calendar service (mock + Google Calendar)
+│   │   │   ├── distance.py       # Distance estimation (mock + Google Distance Matrix)
+│   │   │   └── scoring.py        # Weighted scoring engine
+│   │   ├── telephony/
+│   │   │   ├── twilio_client.py  # Outbound call creation via Twilio SDK
+│   │   │   ├── twiml.py          # TwiML generation (Say + Connect Stream)
+│   │   │   ├── audio.py          # Audio transcoding (mulaw <-> PCM)
+│   │   │   └── media_stream.py   # Twilio Media Stream WS handler + ElevenLabs bridge
+│   │   ├── voice/
+│   │   │   ├── eleven_client.py  # ElevenLabs Conversational AI WS client
+│   │   │   ├── tools_registry.py # Tool dispatch for agent tool calls
+│   │   │   └── prompts.py        # Agent system prompt builder
+│   │   └── swarm/
+│   │       ├── models.py         # CallOutcome enum, ProviderCallResult
+│   │       └── manager.py        # Campaign orchestrator (parallel calls + scoring)
+│   ├── tests/
+│   │   ├── test_scoring.py       # Scoring engine tests
+│   │   └── test_api.py           # API endpoint tests (mocked telephony)
+│   ├── pyproject.toml
+│   └── README.md
+├── frontend/
+│   └── src/
+│       └── components/
+│           ├── LocationInput.tsx  # Geolocation + manual address input
+│           ├── ProviderMap.tsx    # Leaflet/OpenStreetMap provider map
+│           ├── ProviderSelection.tsx  # Provider list + map integration
+│           └── SearchForm.tsx     # Main search form with location support
 ```

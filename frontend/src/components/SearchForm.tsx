@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/popover";
 import { Search, MapPin, Clock, CalendarDays, User } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { LocationInput } from "@/components/LocationInput";
 
 const SERVICES = [
   "dentist",
@@ -42,6 +43,8 @@ interface SearchFormProps {
   onSubmit: (params: {
     service: string;
     location: string;
+    lat?: number;
+    lng?: number;
     dateRangeStart: string;
     dateRangeEnd: string;
     durationMin: number;
@@ -55,6 +58,7 @@ export function SearchForm({ onSubmit, isLoading }: SearchFormProps) {
   const [clientName, setClientName] = useState("");
   const [service, setService] = useState("");
   const [location, setLocation] = useState("");
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | undefined>();
   const [dateStart, setDateStart] = useState<Date | undefined>();
   const [timeStart, setTimeStart] = useState("09:00");
   const [dateEnd, setDateEnd] = useState<Date | undefined>();
@@ -74,6 +78,8 @@ export function SearchForm({ onSubmit, isLoading }: SearchFormProps) {
       clientName,
       service,
       location,
+      lat: coords?.lat,
+      lng: coords?.lng,
       dateRangeStart: combineDateAndTime(dateStart, timeStart),
       dateRangeEnd: combineDateAndTime(dateEnd, timeEnd),
       durationMin: parseInt(duration),
@@ -111,37 +117,38 @@ export function SearchForm({ onSubmit, isLoading }: SearchFormProps) {
               />
             </div>
 
-            <div className="grid gap-6 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label className="flex items-center gap-2 text-sm font-medium">
-                  <Search className="h-3.5 w-3.5 text-muted-foreground" />
-                  Service type
-                </Label>
-                <Select value={service} onValueChange={setService}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a service" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SERVICES.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {s.charAt(0).toUpperCase() + s.slice(1)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2 text-sm font-medium">
+                <Search className="h-3.5 w-3.5 text-muted-foreground" />
+                Service type
+              </Label>
+              <Select value={service} onValueChange={setService}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a service" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SERVICES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s.charAt(0).toUpperCase() + s.slice(1)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-              <div className="space-y-2">
-                <Label className="flex items-center gap-2 text-sm font-medium">
-                  <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-                  Location
-                </Label>
-                <Input
-                  placeholder="e.g. San Francisco"
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                />
-              </div>
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2 text-sm font-medium">
+                <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+                Location
+              </Label>
+              <LocationInput
+                value={location}
+                onChange={(loc, c) => {
+                  setLocation(loc);
+                  setCoords(c);
+                }}
+                placeholder="City, neighbourhood, or address"
+              />
             </div>
 
             {/* Date & time range */}

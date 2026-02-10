@@ -7,6 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import date, datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -16,6 +17,16 @@ if TYPE_CHECKING:
     from app.store import GoogleOAuthToken
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_tz(tz_name: str | None = None) -> ZoneInfo | timezone:
+    """Return a ZoneInfo for the given IANA name, falling back to UTC."""
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except (KeyError, Exception):
+            logger.warning("Unknown timezone %r; falling back to UTC", tz_name)
+    return ZoneInfo("UTC")
 
 # Google Calendar API base
 _GCAL_FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy"
@@ -45,6 +56,15 @@ class CalendarService(Protocol):
 
     async def is_free(self, start: datetime, end: datetime) -> bool: ...
 
+    async def get_available_slots(
+        self,
+        day: date,
+        business_start: int = 9,
+        business_end: int = 17,
+        min_slot_minutes: int = 30,
+        tz_name: str | None = None,
+    ) -> list[tuple[datetime, datetime]]: ...
+
 
 # ---------------------------------------------------------------------------
 # Mock calendar
@@ -56,13 +76,19 @@ def _date_hash(d: date) -> int:
     return int(hashlib.sha256(d.isoformat().encode()).hexdigest(), 16)
 
 
-def _busy_blocks(d: date) -> list[tuple[datetime, datetime]]:
+def _busy_blocks(d: date, tz: ZoneInfo | timezone | None = None) -> list[tuple[datetime, datetime]]:
     """Return deterministic busy blocks for a given date.
 
     Always includes 12:00-13:00 lunch block.
     Adds one extra block derived from the date hash.
+
+    *tz* controls which timezone the wall-clock hours refer to.
+    Defaults to UTC for backward compatibility, but callers should
+    pass the user's local timezone so that "lunch at noon" means noon
+    local time.
     """
-    tz = timezone.utc
+    if tz is None:
+        tz = timezone.utc
     blocks: list[tuple[datetime, datetime]] = []
 
     # Fixed lunch block
@@ -97,24 +123,87 @@ def _intervals_overlap(
     return a_start < b_end and b_start < a_end
 
 
+def _compute_free_windows(
+    day_start: datetime,
+    day_end: datetime,
+    busy_blocks: list[tuple[datetime, datetime]],
+    min_slot_minutes: int = 30,
+) -> list[tuple[datetime, datetime]]:
+    """Compute free windows between *day_start* and *day_end*.
+
+    Busy blocks must already be sorted by start time.
+    Returns only windows >= *min_slot_minutes*.
+    """
+    free: list[tuple[datetime, datetime]] = []
+    cursor = day_start
+
+    for b_start, b_end in busy_blocks:
+        # Clamp to business-hours window
+        b_start = max(b_start, day_start)
+        b_end = min(b_end, day_end)
+        if b_start >= day_end or b_end <= day_start:
+            continue  # outside window
+        if cursor < b_start:
+            gap = b_start - cursor
+            if gap >= timedelta(minutes=min_slot_minutes):
+                free.append((cursor, b_start))
+        cursor = max(cursor, b_end)
+
+    # Trailing free window after last busy block
+    if cursor < day_end:
+        gap = day_end - cursor
+        if gap >= timedelta(minutes=min_slot_minutes):
+            free.append((cursor, day_end))
+
+    return free
+
+
 class MockCalendarService:
     """Deterministic mock calendar with stable busy blocks."""
 
+    def __init__(self, tz_name: str | None = None) -> None:
+        self._tz = _resolve_tz(tz_name)
+
     async def is_free(self, start: datetime, end: datetime) -> bool:
-        # Ensure timezone-aware
+        # Ensure timezone-aware — default to configured tz, not UTC
         if start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
+            start = start.replace(tzinfo=self._tz)
         if end.tzinfo is None:
-            end = end.replace(tzinfo=timezone.utc)
+            end = end.replace(tzinfo=self._tz)
 
         current = start.date()
         end_date = end.date()
         while current <= end_date:
-            for b_start, b_end in _busy_blocks(current):
+            for b_start, b_end in _busy_blocks(current, self._tz):
                 if _intervals_overlap(start, end, b_start, b_end):
                     return False
             current += timedelta(days=1)
         return True
+
+    async def get_available_slots(
+        self,
+        day: date,
+        business_start: int = 9,
+        business_end: int = 17,
+        min_slot_minutes: int = 30,
+        tz_name: str | None = None,
+    ) -> list[tuple[datetime, datetime]]:
+        """Return free windows on *day* during business hours.
+
+        *tz_name* is an IANA timezone (e.g. ``America/Los_Angeles``).
+        Business hours are interpreted in that timezone, and the returned
+        datetimes carry the same zone so the caller (and ultimately the
+        frontend) sees the correct wall-clock times.
+        """
+        tz = _resolve_tz(tz_name) if tz_name else self._tz
+        day_start = datetime.combine(day, time(business_start, 0), tzinfo=tz)
+        day_end = datetime.combine(day, time(business_end, 0), tzinfo=tz)
+
+        # Busy blocks are generated in the user's local timezone,
+        # so all datetimes share the same tzinfo.
+        busy = sorted(_busy_blocks(day, tz), key=lambda b: b[0])
+        windows = _compute_free_windows(day_start, day_end, busy, min_slot_minutes)
+        return windows
 
 
 # ---------------------------------------------------------------------------
@@ -159,11 +248,11 @@ class GoogleCalendarService:
         }
         try:
             result = self._service.freebusy().query(body=body).execute()
-            busy_raw = (
-                result.get("calendars", {})
-                .get(self._calendar_id, {})
-                .get("busy", [])
-            )
+            calendars = result.get("calendars", {})
+            cal_data = calendars.get(self._calendar_id, {})
+            if not cal_data.get("busy") and calendars:
+                cal_data = next(iter(calendars.values()), {})
+            busy_raw = cal_data.get("busy", [])
             blocks = []
             for b in busy_raw:
                 blocks.append((
@@ -176,6 +265,8 @@ class GoogleCalendarService:
             return []
 
     async def is_free(self, start: datetime, end: datetime) -> bool:
+        # Naive datetimes are unlikely here (callers should localise),
+        # but fall back to UTC to keep the API call valid.
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         if end.tzinfo is None:
@@ -188,6 +279,24 @@ class GoogleCalendarService:
             if _intervals_overlap(start, end, b_start, b_end):
                 return False
         return True
+
+    async def get_available_slots(
+        self,
+        day: date,
+        business_start: int = 9,
+        business_end: int = 17,
+        min_slot_minutes: int = 30,
+        tz_name: str | None = None,
+    ) -> list[tuple[datetime, datetime]]:
+        """Return free windows on *day* during business hours."""
+        tz = _resolve_tz(tz_name)
+        day_start = datetime.combine(day, time(business_start, 0), tzinfo=tz)
+        day_end = datetime.combine(day, time(business_end, 0), tzinfo=tz)
+
+        busy = await self.get_busy_blocks(day_start, day_end)
+        busy = [(s.astimezone(tz), e.astimezone(tz)) for s, e in busy]
+        busy.sort(key=lambda b: b[0])
+        return _compute_free_windows(day_start, day_end, busy, min_slot_minutes)
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +381,19 @@ class UserOAuthCalendarService:
             )
 
         result = resp.json()
-        busy_raw = (
-            result.get("calendars", {})
-            .get(self._calendar_id, {})
-            .get("busy", [])
+        # Google sometimes returns the actual email as the calendar key
+        # instead of "primary", so fall back to the first calendar entry.
+        calendars = result.get("calendars", {})
+        cal_data = calendars.get(self._calendar_id, {})
+        if not cal_data.get("busy") and calendars:
+            cal_data = next(iter(calendars.values()), {})
+        busy_raw = cal_data.get("busy", [])
+
+        logger.info(
+            "FreeBusy response: calendar_keys=%s busy_count=%d",
+            list(calendars.keys()), len(busy_raw),
         )
+
         return [
             (datetime.fromisoformat(b["start"]), datetime.fromisoformat(b["end"]))
             for b in busy_raw
@@ -309,6 +426,37 @@ class UserOAuthCalendarService:
             if _intervals_overlap(start, end, b_start, b_end):
                 return False
         return True
+
+    async def get_available_slots(
+        self,
+        day: date,
+        business_start: int = 9,
+        business_end: int = 17,
+        min_slot_minutes: int = 30,
+        tz_name: str | None = None,
+    ) -> list[tuple[datetime, datetime]]:
+        """Return free windows on *day* during business hours.
+
+        Raises CalendarUnavailableError if the calendar cannot be reached.
+        """
+        tz = _resolve_tz(tz_name)
+        day_start = datetime.combine(day, time(business_start, 0), tzinfo=tz)
+        day_end = datetime.combine(day, time(business_end, 0), tzinfo=tz)
+
+        try:
+            busy = await self._freebusy_query(
+                day_start, day_end, self._token.access_token
+            )
+        except CalendarUnavailableError:
+            raise
+        except Exception as exc:
+            raise CalendarUnavailableError(
+                "Failed to fetch calendar availability"
+            ) from exc
+
+        busy = [(s.astimezone(tz), e.astimezone(tz)) for s, e in busy]
+        busy.sort(key=lambda b: b[0])
+        return _compute_free_windows(day_start, day_end, busy, min_slot_minutes)
 
 
 # ---------------------------------------------------------------------------
@@ -359,4 +507,5 @@ def get_calendar_service(settings: Settings | None = None) -> CalendarService:
             return svc  # type: ignore[return-value]
         except Exception:
             logger.exception("Failed to init Google Calendar; falling back to mock")
-    return MockCalendarService()  # type: ignore[return-value]
+    tz_name = settings.default_timezone if settings else None
+    return MockCalendarService(tz_name=tz_name)  # type: ignore[return-value]

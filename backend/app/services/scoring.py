@@ -80,6 +80,9 @@ def rank_offers(
 ) -> tuple[list[SlotOffer], dict[str, dict]]:
     """Score and sort offers descending.  Mutates offer.score in place.
 
+    Scores are **relative**: the best offer gets 1.0 (100%) and the rest
+    are scaled proportionally so users can compare options meaningfully.
+
     Returns (sorted_offers, debug_breakdown_by_provider_id).
     """
     scored: list[tuple[float, SlotOffer, dict]] = []
@@ -95,8 +98,16 @@ def rank_offers(
         offer.score = total
         scored.append((total, offer, breakdown))
 
-    # Sort descending by score
+    # Sort descending by raw score
     scored.sort(key=lambda t: t[0], reverse=True)
+
+    # Normalize scores relative to the best offer (best = 1.0 / 100%)
+    max_score = scored[0][0] if scored else 1.0
+    if max_score > 0:
+        for raw, offer, breakdown in scored:
+            offer.score = round(raw / max_score, 4)
+            breakdown["raw_score"] = raw
+            breakdown["relative_score"] = offer.score
 
     sorted_offers = [t[1] for t in scored]
 

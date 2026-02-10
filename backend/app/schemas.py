@@ -24,9 +24,53 @@ class Provider(BaseModel):
     services: list[str]
 
 
+class ProviderPreview(BaseModel):
+    """Provider info enriched with travel time, returned before calling."""
+    id: str
+    name: str
+    phone: str
+    address: str
+    rating: float
+    lat: float
+    lng: float
+    services: list[str]
+    travel_minutes: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Appointment request (from frontend)
 # ---------------------------------------------------------------------------
+
+class ProviderSearchRequest(BaseModel):
+    """Request to search providers before starting a campaign."""
+    service: str
+    location: str
+    lat: float | None = None  # optional user coordinates (from geolocation)
+    lng: float | None = None
+    max_providers: int = 15
+    max_travel_minutes: int = 0  # 0 = no limit
+
+
+class ProviderSearchResponse(BaseModel):
+    """List of providers with distance info so the user can pick."""
+    providers: list[ProviderPreview]
+
+
+class CallMode(str, Enum):
+    """How calls are placed for a campaign.
+
+    - ``auto``      – use the server-wide ``SIMULATED_CALLS`` setting.
+    - ``real``      – every call goes through Twilio.
+    - ``simulated`` – every call is simulated locally (no Twilio needed).
+    - ``hybrid``    – the **first** call is a real Twilio call; the
+                      remaining calls are simulated so you can demo
+                      parallel-call functionality on a single Twilio number.
+    """
+    auto = "auto"
+    real = "real"
+    simulated = "simulated"
+    hybrid = "hybrid"
+
 
 class AppointmentRequest(BaseModel):
     service: str
@@ -37,7 +81,14 @@ class AppointmentRequest(BaseModel):
     preferences: dict[str, float] = Field(default_factory=dict)
     max_providers: int = 15
     max_parallel: int = 5
+    max_travel_minutes: int = 0  # 0 = no limit; filter providers by travel time
+    provider_ids: list[str] = Field(default_factory=list)  # if set, only call these providers
     user_id: str = ""  # links to Google Calendar when OAuth is connected
+    timezone: str = ""  # IANA timezone (e.g. "America/Los_Angeles"); falls back to server default
+    call_mode: CallMode = CallMode.auto  # override the server-wide SIMULATED_CALLS setting per campaign
+    auto_book: bool = True  # automatically book the best slot after discovery
+    client_name: str = ""  # name of the person the appointment is for
+    client_phone: str = ""  # phone number of the client (for provider callback)
 
 
 # ---------------------------------------------------------------------------
@@ -59,12 +110,15 @@ class SlotOffer(BaseModel):
 
 class CampaignStatusEnum(str, Enum):
     running = "running"
-    completed = "completed"
+    booking = "booking"        # Phase 2: agent is confirming the best slot
+    booked = "booked"          # Phase 2 succeeded — appointment confirmed
+    completed = "completed"    # Discovery done (auto_book=False or booking failed)
     failed = "failed"
 
 
 class CampaignProgress(BaseModel):
     total_providers: int = 0
+    calls_in_progress: int = 0
     completed_calls: int = 0
     successful_calls: int = 0
     failed_calls: int = 0
@@ -73,6 +127,19 @@ class CampaignProgress(BaseModel):
 class CreateCampaignResponse(BaseModel):
     campaign_id: str
     status: CampaignStatusEnum
+    call_mode: str = ""  # effective call mode for this campaign
+
+
+class BookingConfirmation(BaseModel):
+    """Result of the autonomous booking phase."""
+    provider_id: str
+    start: datetime
+    end: datetime
+    confirmation_ref: str
+    confirmed_at: datetime
+    notes: str = ""
+    client_name: str = ""  # name the appointment was booked under
+    client_phone: str = ""  # client phone shared with the provider
 
 
 class CampaignResponse(BaseModel):
@@ -81,6 +148,7 @@ class CampaignResponse(BaseModel):
     progress: CampaignProgress
     best: SlotOffer | None = None
     ranked: list[SlotOffer] = Field(default_factory=list)
+    booking: BookingConfirmation | None = None
     debug: dict[str, Any] = Field(default_factory=dict)
 
 

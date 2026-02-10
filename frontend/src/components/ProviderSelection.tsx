@@ -6,6 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { ArrowLeft, MapPin, Star, Building2, Users, Clock, Sparkles } from "lucide-react";
 import type { Provider } from "@/types/campaign";
+import { ProviderMap } from "@/components/ProviderMap";
 
 interface ProviderSelectionProps {
   providers: Provider[];
@@ -14,6 +15,7 @@ interface ProviderSelectionProps {
   isLoading: boolean;
   autoBook: boolean;
   onAutoBookChange: (value: boolean) => void;
+  mapCenter?: { lat: number; lng: number };
 }
 
 export function ProviderSelection({
@@ -23,6 +25,7 @@ export function ProviderSelection({
   isLoading,
   autoBook,
   onAutoBookChange,
+  mapCenter,
 }: ProviderSelectionProps) {
   const [selected, setSelected] = useState<Set<string>>(
     new Set(providers.map((p) => p.id))
@@ -74,6 +77,15 @@ export function ProviderSelection({
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Provider map */}
+      <div className="mb-6">
+        <ProviderMap
+          providers={providers}
+          center={mapCenter}
+          selectedIds={selected}
+        />
       </div>
 
       <Card className="glass shadow-xl mb-6">

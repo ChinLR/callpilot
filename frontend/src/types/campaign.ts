@@ -2,6 +2,8 @@
 export interface ProviderSearchRequest {
   service: string;
   location: string;
+  lat?: number;
+  lng?: number;
   max_travel_minutes?: number;
 }
 
