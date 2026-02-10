@@ -11,6 +11,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.services.calendar import (
@@ -29,24 +30,79 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _fix_past_dates(start: datetime, end: datetime) -> tuple[datetime, datetime]:
+    """If the AI agent accidentally used a past year, bump to current year."""
+    from datetime import date as date_type
+
+    today = date_type.today()
+    if start.date() < today:
+        year_delta = today.year - start.year
+        if year_delta > 0:
+            start = start.replace(year=start.year + year_delta)
+            end = end.replace(year=end.year + year_delta)
+            logger.warning("Auto-corrected past date by +%d year(s)", year_delta)
+    return start, end
+
+
+def _localize_naive(dt: datetime, settings: Settings) -> datetime:
+    """If *dt* is naive (no tzinfo), attach the configured local timezone.
+
+    This ensures that "10:00" from the AI agent is interpreted as 10:00
+    in the user's timezone rather than 10:00 UTC.
+    """
+    if dt.tzinfo is not None:
+        return dt
+    try:
+        tz = ZoneInfo(settings.default_timezone)
+    except (KeyError, Exception):
+        tz = ZoneInfo("UTC")
+    return dt.replace(tzinfo=tz)
+
+
 async def _get_calendar_for_context(context: dict):
     """Resolve the best calendar service from the tool context.
 
     Uses the user's linked Google Calendar if the campaign has a user_id,
     otherwise falls back to the default (service-account or mock).
+
+    As a convenience for single-user demos, if no user_id is set on the
+    campaign but there is exactly one OAuth token in the store, use it.
     """
     settings: Settings = context.get("settings", Settings())
 
     campaign_id = context.get("campaign_id", "")
+    user_id = ""
     if campaign_id:
         from app.store import store
         campaign = await store.get_campaign(campaign_id)
-        if campaign and campaign.request.user_id:
-            return await get_calendar_service_for_user(
-                campaign.request.user_id, settings
-            )
+        if campaign:
+            user_id = campaign.request.user_id
 
-    return get_calendar_service(settings)
+    if user_id:
+        logger.info(
+            "Campaign %s has user_id=%s; resolving calendar service",
+            campaign_id, user_id,
+        )
+        return await get_calendar_service_for_user(user_id, settings)
+
+    # Fallback: if no user_id but there are stored OAuth tokens, pick the
+    # first one.  This keeps single-user / demo setups working without
+    # requiring the frontend to pass user_id on every campaign.
+    from app.store import store as _store
+    if _store.oauth_tokens:
+        fallback_user_id = next(iter(_store.oauth_tokens))
+        logger.info(
+            "Campaign %s has no user_id; using fallback OAuth token for user_id=%s",
+            campaign_id, fallback_user_id,
+        )
+        return await get_calendar_service_for_user(fallback_user_id, settings)
+
+    svc = get_calendar_service(settings)
+    logger.info(
+        "No OAuth tokens available; using %s calendar",
+        type(svc).__name__,
+    )
+    return svc
 
 
 # ---------------------------------------------------------------------------
@@ -57,13 +113,17 @@ async def _get_calendar_for_context(context: dict):
 async def calendar_check(params: dict, context: dict) -> dict:
     """Check if a time slot is free on the user's calendar."""
     calendar = await _get_calendar_for_context(context)
+    settings: Settings = context.get("settings", Settings())
 
     start_str = params.get("start", "")
     end_str = params.get("end", "")
 
     try:
-        start = datetime.fromisoformat(start_str)
-        end = datetime.fromisoformat(end_str)
+        start = _localize_naive(datetime.fromisoformat(start_str), settings)
+        end = _localize_naive(datetime.fromisoformat(end_str), settings)
+
+        # Auto-correct past years
+        start, end = _fix_past_dates(start, end)
     except (ValueError, TypeError):
         return {"free": False, "error": "Invalid datetime format"}
 
@@ -73,19 +133,28 @@ async def calendar_check(params: dict, context: dict) -> dict:
         logger.warning("Calendar unavailable during calendar_check; reporting as not free")
         return {"free": False, "error": "Calendar unavailable, cannot verify"}
 
-    return {"free": free}
+    return {
+        "free": free,
+        "checked_start": start.strftime("%-I:%M %p"),
+        "checked_end": end.strftime("%-I:%M %p"),
+        "timezone": settings.default_timezone,
+    }
 
 
 async def validate_slot(params: dict, context: dict) -> dict:
     """Validate a slot: must be calendar-free and within the campaign's date range."""
     calendar = await _get_calendar_for_context(context)
+    settings: Settings = context.get("settings", Settings())
 
     start_str = params.get("start", "")
     end_str = params.get("end", "")
 
     try:
-        start = datetime.fromisoformat(start_str)
-        end = datetime.fromisoformat(end_str)
+        start = _localize_naive(datetime.fromisoformat(start_str), settings)
+        end = _localize_naive(datetime.fromisoformat(end_str), settings)
+
+        # Auto-correct past years
+        start, end = _fix_past_dates(start, end)
     except (ValueError, TypeError):
         return {"ok": False, "reason": "Invalid datetime format"}
 
@@ -95,15 +164,8 @@ async def validate_slot(params: dict, context: dict) -> dict:
         from app.store import store
         campaign = await store.get_campaign(campaign_id)
         if campaign:
-            range_start = campaign.request.date_range_start
-            range_end = campaign.request.date_range_end
-            # Make naive datetimes comparable by adding UTC if needed
-            if start.tzinfo is not None and range_start.tzinfo is None:
-                range_start = range_start.replace(tzinfo=timezone.utc)
-                range_end = range_end.replace(tzinfo=timezone.utc)
-            elif start.tzinfo is None and range_start.tzinfo is not None:
-                start = start.replace(tzinfo=timezone.utc)
-                end = end.replace(tzinfo=timezone.utc)
+            range_start = _localize_naive(campaign.request.date_range_start, settings)
+            range_end = _localize_naive(campaign.request.date_range_end, settings)
             if start < range_start or end > range_end:
                 return {"ok": False, "reason": "Slot is outside the requested date range"}
 
@@ -204,6 +266,69 @@ async def provider_lookup(params: dict, context: dict) -> dict:
     }
 
 
+async def available_slots(params: dict, context: dict) -> dict:
+    """Return the client's free time windows for a given date (9 AM–5 PM).
+
+    Params:
+        date: ISO date string, e.g. "2026-02-10"
+        business_start: (optional) hour int, default 9
+        business_end:   (optional) hour int, default 17
+    """
+    calendar = await _get_calendar_for_context(context)
+    settings: Settings = context.get("settings", Settings())
+
+    date_str = params.get("date", "")
+    try:
+        from datetime import date as date_type
+        day = date_type.fromisoformat(date_str)
+
+        # Auto-correct past dates: if the agent accidentally used a past
+        # year (e.g. 2025 instead of 2026), bump to the current year.
+        today = date_type.today()
+        if day < today:
+            day = day.replace(year=today.year)
+            if day < today:
+                day = day.replace(year=today.year + 1)
+            logger.warning(
+                "available_slots: corrected past date %s → %s",
+                date_str, day.isoformat(),
+            )
+    except (ValueError, TypeError):
+        return {"slots": [], "error": "Invalid date format. Use YYYY-MM-DD."}
+
+    biz_start = int(params.get("business_start", 9))
+    biz_end = int(params.get("business_end", 17))
+
+    # Use the configured timezone so business hours are in the user's
+    # local time rather than UTC.
+    tz_name = settings.default_timezone
+
+    try:
+        windows = await calendar.get_available_slots(
+            day,
+            business_start=biz_start,
+            business_end=biz_end,
+            min_slot_minutes=30,
+            tz_name=tz_name,
+        )
+    except Exception:
+        logger.warning("Calendar unavailable during available_slots lookup")
+        return {"slots": [], "error": "Calendar unavailable, cannot fetch availability"}
+
+    slots = []
+    for s, e in windows:
+        slots.append({
+            "start": s.isoformat(),
+            "end": e.isoformat(),
+            # Human-readable labels so the AI agent doesn't misinterpret
+            # the timezone offset (e.g. reading +01:00 as "plus 1 hour").
+            "start_local": s.strftime("%-I:%M %p"),
+            "end_local": e.strftime("%-I:%M %p"),
+            "date": s.strftime("%A, %B %-d, %Y"),
+        })
+    return {"slots": slots, "timezone": tz_name}
+
+
 async def propose_alternatives(params: dict, context: dict) -> dict:
     """Suggest alternative providers/times when current provider has no slots."""
     settings: Settings = context.get("settings", Settings())
@@ -252,6 +377,7 @@ async def propose_alternatives(params: dict, context: dict) -> dict:
 TOOLS: dict[str, Any] = {
     "calendar_check": calendar_check,
     "validate_slot": validate_slot,
+    "available_slots": available_slots,
     "distance_check": distance_check,
     "log_event": log_event,
     "provider_lookup": provider_lookup,

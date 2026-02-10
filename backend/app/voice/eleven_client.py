@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 import httpx
 import websockets
@@ -43,8 +44,10 @@ async def create_eleven_session(
 ) -> websockets.WebSocketClientProtocol | None:  # type: ignore[name-defined]
     """Open a WebSocket session to ElevenLabs Conversational AI.
 
-    Sends the conversation_initiation_client_data with a prompt override
-    tailored to the current provider and campaign context.
+    Sends conversation_initiation_client_data with dynamic variables
+    tailored to the current provider and campaign context.  The agent's
+    prompt on the ElevenLabs dashboard should use {{placeholders}} to
+    incorporate these variables.
 
     Returns the connected websocket or None on failure.
     """
@@ -57,13 +60,14 @@ async def create_eleven_session(
 
     # Build dynamic prompt
     system_prompt = ""
-    first_message = "Hello, I'm calling to schedule an appointment."
+    first_message = "Hello, I'm calling to check available appointment times."
     if provider and campaign:
+        client_name = campaign.request.client_name or "a client"
         system_prompt = build_system_prompt(provider, campaign.request)
         first_message = (
-            f"Hello, I'm calling on behalf of a client who would like to "
+            f"Hello, I'm calling on behalf of {client_name} who would like to "
             f"schedule a {campaign.request.service} appointment with "
-            f"{provider.name}. Could you help me with that?"
+            f"{provider.name}. Could you help me check what times you have available?"
         )
 
     # Get signed URL for security
@@ -79,12 +83,39 @@ async def create_eleven_session(
             additional_headers={"Origin": "https://callpilot.app"},
         )
 
-        # Send initiation message without overrides — the ElevenLabs agent
-        # config does not allow client-side overrides for prompt or
-        # first_message, so we rely on the dashboard configuration.
-        init_msg = {
-            "type": "conversation_initiation_client_data",
+        # Send initiation message with dynamic variables.
+        # These fill {{placeholders}} in the dashboard-configured prompt.
+        now = datetime.now(timezone.utc)
+        dynamic_vars = {
+            "current_date": now.strftime("%A, %B %d, %Y"),
+            "current_year": str(now.year),
         }
+        if provider and campaign:
+            req = campaign.request
+            dynamic_vars.update({
+                "provider_name": provider.name,
+                "provider_address": provider.address,
+                "service": req.service,
+                "date_range_start": req.date_range_start.strftime("%A, %B %d, %Y"),
+                "date_range_end": req.date_range_end.strftime("%A, %B %d, %Y"),
+                "duration_min": str(req.duration_min),
+                "client_name": req.client_name or "my client",
+            })
+
+        init_msg: dict = {
+            "type": "conversation_initiation_client_data",
+            "dynamic_variables": dynamic_vars,
+        }
+
+        # Pass prompt and first_message as dynamic variables rather than
+        # conversation_config_override — the ElevenLabs agent config does
+        # not allow client overrides, so we inject all context via
+        # {{placeholders}} in the dashboard-configured prompt instead.
+        if system_prompt:
+            dynamic_vars["system_prompt"] = system_prompt
+        if first_message:
+            dynamic_vars["first_message"] = first_message
+
         await ws.send(json.dumps(init_msg))
 
         # Wait for confirmation

@@ -87,6 +87,11 @@ const BookAppointment = () => {
             isLoading={campaign.isLoading}
             autoBook={campaign.autoBook}
             onAutoBookChange={campaign.setAutoBook}
+            mapCenter={
+              campaign.searchParams?.lat != null && campaign.searchParams?.lng != null
+                ? { lat: campaign.searchParams.lat, lng: campaign.searchParams.lng }
+                : undefined
+            }
           />
         )}
 

@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.config import get_settings
 from app.store import GoogleOAuthToken, store
@@ -75,24 +75,79 @@ async def google_authorize(user_id: str = Query(..., description="Unique user id
 # ---------------------------------------------------------------------------
 
 
-@router.get("/callback")
+def _success_html(user_id: str) -> str:
+    """Return a simple HTML page confirming Google Calendar was linked."""
+    return f"""<!DOCTYPE html>
+<html>
+<head><title>CallPilot — Google Calendar Linked</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         display: flex; align-items: center; justify-content: center; height: 100vh;
+         margin: 0; background: #f8f9fa; color: #333; }}
+  .card {{ background: #fff; padding: 2.5rem; border-radius: 12px;
+           box-shadow: 0 2px 12px rgba(0,0,0,.08); text-align: center; max-width: 420px; }}
+  .check {{ font-size: 3rem; margin-bottom: .5rem; }}
+  h1 {{ font-size: 1.4rem; margin: 0 0 .5rem; }}
+  p  {{ color: #666; font-size: .95rem; margin: 0; }}
+  code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: .85rem; }}
+</style></head>
+<body><div class="card">
+  <div class="check">&#10003;</div>
+  <h1>Google Calendar Connected</h1>
+  <p>Your calendar has been linked successfully.<br>
+     User ID: <code>{user_id}</code></p>
+  <p style="margin-top:1rem;color:#999;font-size:.85rem;">You can close this tab.</p>
+</div></body></html>"""
+
+
+def _error_html(detail: str) -> str:
+    """Return a simple HTML page showing an OAuth error."""
+    return f"""<!DOCTYPE html>
+<html>
+<head><title>CallPilot — OAuth Error</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         display: flex; align-items: center; justify-content: center; height: 100vh;
+         margin: 0; background: #f8f9fa; color: #333; }}
+  .card {{ background: #fff; padding: 2.5rem; border-radius: 12px;
+           box-shadow: 0 2px 12px rgba(0,0,0,.08); text-align: center; max-width: 420px; }}
+  .icon {{ font-size: 3rem; margin-bottom: .5rem; }}
+  h1 {{ font-size: 1.4rem; margin: 0 0 .5rem; color: #c0392b; }}
+  p  {{ color: #666; font-size: .95rem; margin: 0; }}
+  code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: .85rem; }}
+</style></head>
+<body><div class="card">
+  <div class="icon">&#10007;</div>
+  <h1>OAuth Error</h1>
+  <p><code>{detail}</code></p>
+  <p style="margin-top:1rem;color:#999;font-size:.85rem;">Please try linking again.</p>
+</div></body></html>"""
+
+
+@router.get("/callback", response_model=None)
 async def google_callback(
     code: str = Query(...),
     state: str = Query(""),
     error: str = Query(""),
-) -> RedirectResponse:
+) -> HTMLResponse | RedirectResponse:
     """Google redirects here after the user grants (or denies) consent.
 
     Exchanges the authorization code for tokens and stores them.
-    Then redirects the user back to the frontend.
+    If a frontend URL is configured and reachable, redirects there;
+    otherwise renders a simple confirmation page.
     """
     settings = get_settings()
 
+    # If a frontend URL is configured, redirect there (original behaviour)
+    use_redirect = bool(settings.frontend_url)
+
     if error:
         logger.warning("OAuth callback error: %s", error)
-        return RedirectResponse(
-            url=f"{settings.frontend_url}?oauth=error&detail={error}"
-        )
+        if use_redirect:
+            return RedirectResponse(
+                url=f"{settings.frontend_url}/book?oauth=error&detail={error}"
+            )
+        return HTMLResponse(_error_html(error))
 
     user_id = state
     if not user_id:
@@ -117,18 +172,22 @@ async def google_callback(
 
     if resp.status_code != 200:
         logger.error("Token exchange failed: %s %s", resp.status_code, resp.text)
-        return RedirectResponse(
-            url=f"{settings.frontend_url}?oauth=error&detail=token_exchange_failed"
-        )
+        if use_redirect:
+            return RedirectResponse(
+                url=f"{settings.frontend_url}/book?oauth=error&detail=token_exchange_failed"
+            )
+        return HTMLResponse(_error_html("token_exchange_failed"), status_code=502)
 
     data = resp.json()
     access_token = data.get("access_token", "")
     refresh_token = data.get("refresh_token", "")
 
     if not access_token:
-        return RedirectResponse(
-            url=f"{settings.frontend_url}?oauth=error&detail=no_access_token"
-        )
+        if use_redirect:
+            return RedirectResponse(
+                url=f"{settings.frontend_url}/book?oauth=error&detail=no_access_token"
+            )
+        return HTMLResponse(_error_html("no_access_token"), status_code=502)
 
     # Store the token
     token = GoogleOAuthToken(
@@ -140,9 +199,11 @@ async def google_callback(
 
     logger.info("OAuth tokens saved for user_id=%s", user_id)
 
-    return RedirectResponse(
-        url=f"{settings.frontend_url}?oauth=success"
-    )
+    if use_redirect:
+        return RedirectResponse(
+            url=f"{settings.frontend_url}/book?oauth=success"
+        )
+    return HTMLResponse(_success_html(user_id))
 
 
 # ---------------------------------------------------------------------------
@@ -243,16 +304,14 @@ async def google_verify(user_id: str = Query(...)) -> dict:
 
     # --- 4. Parse the successful response ---------------------------------
     data = resp.json()
-    busy_blocks = (
-        data.get("calendars", {})
-        .get("primary", {})
-        .get("busy", [])
-    )
-    errors = (
-        data.get("calendars", {})
-        .get("primary", {})
-        .get("errors", [])
-    )
+    # Google may return the actual email as the key instead of "primary",
+    # so fall back to the first calendar entry in the response.
+    calendars = data.get("calendars", {})
+    cal_data = calendars.get("primary", {})
+    if not cal_data.get("busy") and not cal_data.get("errors") and calendars:
+        cal_data = next(iter(calendars.values()), {})
+    busy_blocks = cal_data.get("busy", [])
+    errors = cal_data.get("errors", [])
 
     if errors:
         return {

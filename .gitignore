@@ -40,6 +40,12 @@ Thumbs.db
 credentials.json
 service-account.json
 token.json
+**/oauth_tokens.json
+
+# ========================
+# Runtime data (persisted state)
+# ========================
+backend/data/campaigns.json
 
 # ========================
 # Testing & Coverage
